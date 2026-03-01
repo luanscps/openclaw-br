@@ -1,6 +1,6 @@
-# 🦞 OpenClaw Brasil — Docker + CasaOS + Portainer + macvlan-dhcp
+# 🦞 OpenClaw Brasil — Docker + Caddy SSL + macvlan-dhcp
 
-> Assistente de IA Pessoal rodando em sua infraestrutura própria
+> Assistente de IA Pessoal rodando em sua infraestrutura própria com HTTPS nativo
 
 [![GitHub License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![GitHub Stars](https://img.shields.io/github/stars/luanscps/openclaw-br?style=flat-square)](https://github.com/luanscps/openclaw-br/stargazers)
@@ -8,11 +8,13 @@
 
 ## Visão Geral
 
-Este repositório contém a instalação otimizada do [OpenClaw](https://github.com/openclaw/openclaw) para ambientes CasaOS com Docker, Portainer e rede **macvlan-dhcp** já configurada.
+Instalação otimizada do [OpenClaw](https://docs.openclaw.ai) para ambientes com Docker, Portainer e rede **macvlan-dhcp** já configurada. Inclui **Caddy** como proxy reverso com SSL automático (certificado autoassinado via `tls internal`), resolvendo o requisito de HTTPS da Control UI.
 
-> **Imagem utilizada:** [`coollabsio/openclaw:latest`](https://github.com/coollabsio/openclaw) — imagem pré-compilada, atualizada automaticamente a cada 6h, com nginx + browser sidecar incluídos.
+> **Imagem utilizada:** [`coollabsio/openclaw:latest`](https://github.com/coollabsio/openclaw) — imagem pré-compilada com nginx + gateway embutidos.
 
-🎯 **Objetivo:** Deploy pronto em ~20 minutos utilizando exatamente sua infraestrutura existente
+🎯 **Objetivo:** Deploy pronto em ~20 minutos com HTTPS funcionando de imediato.
+
+---
 
 ## Infraestrutura Necessária
 
@@ -31,62 +33,78 @@ Este repositório contém a instalação otimizada do [OpenClaw](https://github.
 
 - ✅ Docker 20.10+
 - ✅ Docker Compose v2+
-- ✅ Portainer 2.15+ (opcional)
 - ✅ Rede **macvlan-dhcp** já criada
 - ✅ API Key do Anthropic (Claude) ou OpenAI (GPT)
 - ✅ SSH acesso ao servidor
 
+---
+
 ## Arquitetura
 
 | Componente | Especificação |
-|-----------|---------------|
+|---|---|
+| **Proxy SSL** | caddy (caddy:alpine) |
+| **IP público** | 10.41.10.153 (via macvlan) |
+| **Porta de acesso** | 443 HTTPS / 80 → redirect |
 | **Container principal** | openclaw-gateway |
 | **Imagem** | coollabsio/openclaw:latest |
-| **IP Alocado** | 10.41.10.153/24 |
-| **Porta UI (nginx)** | 8080 |
-| **Porta Gateway (interno)** | 18789 |
+| **Porta interna UI** | 8080 (sem exposição externa) |
+| **Porta gateway** | 18789 (loopback only) |
 | **Container browser** | openclaw-browser |
 | **Imagem browser** | kasmweb/chrome:1.16.0 |
-| **Diretório** | /DATA/AppData/openclaw/ |
-| **Rede externa** | macvlan-dhcp |
+| **Diretório de dados** | /DATA/AppData/openclaw/ |
+| **Rede externa** | macvlan-dhcp (só o Caddy) |
 | **Rede interna** | openclaw-internal (bridge) |
-| **Restart** | unless-stopped |
 
 ### Diagrama de Rede
 
 ```
 Sua rede local (macvlan-dhcp)
          │
-         ▼  http://10.41.10.153:8080
-┌──────────────────────────────────────────┐
-│  openclaw-gateway (coollabsio/openclaw)  │
-│  nginx :8080  ──▶  gateway :18789        │
-│  Login: admin / AUTH_PASSWORD            │
-└────────────┬─────────────────────────────┘
+         ▼  https://10.41.10.153  (porta 443)
+┌─────────────────────────────────────────────┐
+│  caddy (caddy:alpine)                       │
+│  TLS interno (certificado autoassinado)     │
+│  reverse_proxy → openclaw-gateway:8080      │
+└────────────┬────────────────────────────────┘
              │ openclaw-internal (bridge)
-             ▼  http://browser:9222 (CDP)
-    ┌────────────────────┐
-    │  openclaw-browser  │
-    │  kasmweb/chrome    │
-    │  Chrome CDP :9222  │
-    └────────────────────┘
-      (sem IP externo —
-       isolado na rede
-       interna)
+             ▼  http://openclaw-gateway:8080
+┌──────────────────────────────────────────────────────┐
+│  openclaw-gateway (coollabsio/openclaw)              │
+│  nginx :8080  ──▶  gateway ws://127.0.0.1:18789      │
+│  Login: admin / AUTH_PASSWORD                        │
+└────────────────────┬─────────────────────────────────┘
+                     │ openclaw-internal (bridge)
+                     ▼  http://browser:9222 (CDP)
+            ┌────────────────────┐
+            │  openclaw-browser  │
+            │  kasmweb/chrome    │
+            │  Chrome CDP :9222  │
+            └────────────────────┘
+             (sem IP externo —
+              isolado na rede
+              interna)
 ```
+
+> **Por que Caddy?** A Control UI do OpenClaw exige contexto seguro (HTTPS) para gerar a *device identity* via Web Crypto API. Sem HTTPS, o browser bloqueia e a UI não conecta.
+
+---
 
 ## Estrutura de Arquivos
 
 ```
 openclaw-br/
-├── docker-compose.yml          # Stack com gateway + browser sidecar
+├── docker-compose.yml          # Stack: caddy + gateway + browser
+├── Caddyfile                   # Config do proxy SSL (tls internal)
 ├── .env.example                # Template de variáveis de ambiente
 ├── setup-verificacao.sh        # Script automático de validação
 ├── README.md                   # Este arquivo
 └── LICENSE                     # MIT License
 ```
 
-## Quickstart (20 minutos)
+---
+
+## Quickstart (~20 minutos)
 
 ### 1️⃣ Clonar o Repositório
 
@@ -99,92 +117,117 @@ cd openclaw
 ### 2️⃣ Preparar Estrutura
 
 ```bash
-# Criar diretórios de dados
-mkdir -p config workspace browser-profile
-
-# Definir permissões
-sudo chown -R 1000:1000 .
 chmod +x setup-verificacao.sh
-```
-
-### 3️⃣ Executar Verificação
-
-```bash
 ./setup-verificacao.sh
 ```
 
-**Esperado:** Todos os checks em ✅
+O script cria todos os diretórios necessários e valida a rede macvlan automaticamente.
 
-### 4️⃣ Configurar Credenciais
+### 3️⃣ Configurar Credenciais
 
 ```bash
-# Copiar template
 cp .env.example .env
-
-# Editar com suas chaves reais
 nano .env
 ```
 
-Substituir:
-- `sk-ant-XXXXXXXXXXXXXXXXXXXXX` → Sua chave [Anthropic Console](https://console.anthropic.com/)
-- `seu_token_super_seguro_aqui_32_chars` → Gere com `openssl rand -hex 32`
-- `sua_senha_forte_aqui` → Senha para login na UI (gere com `openssl rand -base64 16`)
+Edite no mínimo:
+
+| Variável | Como gerar | Exemplo |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | [console.anthropic.com](https://console.anthropic.com) | `sk-ant-...` |
+| `OPENCLAW_GATEWAY_TOKEN` | `openssl rand -hex 32` | `a1b2c3...` |
+| `AUTH_PASSWORD` | `openssl rand -base64 16` | `XyZ123...` |
+| `SERVER_IP` | IP macvlan do servidor | `10.41.10.153` |
+
+### 4️⃣ Copiar Caddyfile
+
+```bash
+cp Caddyfile /DATA/AppData/openclaw/Caddyfile
+```
+
+Se quiser usar um IP diferente do padrão, edite:
+```bash
+nano /DATA/AppData/openclaw/Caddyfile
+# Troque 10.41.10.153 pelo seu SERVER_IP
+```
 
 ### 5️⃣ Deploy
 
-**Opção A: Via Portainer UI (Recomendado)**
-
-1. Acesse http://10.0.110.132:9001
-2. **Stacks** → **Add stack**
-3. Nome: `openclaw`
-4. Cole o conteúdo de `docker-compose.yml`
-5. Na seção **Environment variables**, adicione as variáveis do `.env`
-6. Clique em **Deploy the stack**
-
-**Opção B: Via Docker Compose**
-
 ```bash
 docker compose up -d
+docker compose logs -f
 ```
 
-### 6️⃣ Acessar a UI
+### 6️⃣ Aceitar o Certificado Autoassinado
 
-Acesse diretamente na sua rede local:
+No browser, acesse `https://10.41.10.153` (ou seu `SERVER_IP`).
 
-```
-http://10.41.10.153:8080
-```
+O browser vai exibir aviso de segurança — é esperado:
+- **Chrome:** Clique em *Avançado* → *Prosseguir para 10.41.10.153*
+- **Firefox:** Clique em *Avançado* → *Aceitar o risco e continuar*
+
+> ⚠️ **Aceitar o certificado é obrigatório uma vez.** Sem isso, a Web Crypto API não consegue gerar a device identity e a UI não conecta.
+
+### 7️⃣ Login na UI
 
 Login: `admin` / senha definida em `AUTH_PASSWORD` do `.env`
 
-> **Acesso remoto (fora da rede local):** Use SSH tunnel:
-> ```bash
-> ssh -N -L 8080:10.41.10.153:8080 seu-usuario@seu-servidor.local
-> # Acesse: http://127.0.0.1:8080
-> ```
+### 8️⃣ Configurar Token na UI
 
-## Configuração Detalhada
+Na página **Visão Geral**, preencha:
 
-### Variáveis de Ambiente (.env)
+- **URL WebSocket:** `wss://10.41.10.153` (use `wss://`, não `ws://`)
+- **Token do Gateway:** cole o valor de `OPENCLAW_GATEWAY_TOKEN` do seu `.env`
+
+Clique em **Atualizar** e depois **Conectar**.
+
+### 9️⃣ Aprovar Device Pairing (primeiro acesso)
+
+No primeiro acesso, a UI pede aprovação do dispositivo. Execute no servidor:
+
+```bash
+# Ver dispositivos aguardando aprovação
+docker exec openclaw-gateway openclaw devices list
+
+# Aprovar (substitua pelo requestId exibido)
+docker exec openclaw-gateway openclaw devices approve <requestId>
+```
+
+Após aprovado, recarregue a página — o status ficará **OK** ✅.
+
+> A aprovação é salva permanentemente. Novos dispositivos/browsers precisam ser aprovados individualmente.
+
+---
+
+## Variáveis de Ambiente (.env)
 
 | Variável | Descrição | Obrigatório |
-|----------|-----------|-------------|
+|---|---|---|
 | `ANTHROPIC_API_KEY` | Chave do Claude (Anthropic) | Sim (ou OpenAI) |
 | `OPENAI_API_KEY` | Chave do GPT-4o (OpenAI) | Alternativa |
 | `OPENCLAW_GATEWAY_TOKEN` | Token seguro do gateway | Sim |
-| `AUTH_PASSWORD` | Senha da interface web (nginx) | **Sim** |
+| `AUTH_PASSWORD` | Senha da interface web (nginx) | Sim |
+| `SERVER_IP` | IP macvlan do servidor | Sim |
+| `OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS` | Origin HTTPS permitida para a UI | Sim |
+| `OPENCLAW_GATEWAY_TRUSTED_PROXIES` | Proxies confiáveis (nginx interno) | Sim |
 | `TELEGRAM_BOT_TOKEN` | Token do bot Telegram | Não |
 | `DISCORD_BOT_TOKEN` | Token do bot Discord | Não |
 
-### Volumes Mapeados
+---
 
-```yaml
-/DATA/AppData/openclaw/config          → /data/.openclaw
-/DATA/AppData/openclaw/workspace       → /data/workspace
-/DATA/AppData/openclaw/browser-profile → /home/kasm-user  (browser)
+## Volumes Mapeados
+
+```
+/DATA/AppData/openclaw/config      → /data/.openclaw   (openclaw-gateway)
+/DATA/AppData/openclaw/workspace   → /data/workspace   (openclaw-gateway)
+/DATA/AppData/openclaw/caddy-data  → /data             (caddy)
+/DATA/AppData/openclaw/caddy-config→ /config           (caddy)
+/DATA/AppData/openclaw/Caddyfile   → /etc/caddy/Caddyfile (caddy)
 ```
 
-Todos os dados são **persistentes** entre restarts.
+> ⚠️ **Não monte volume em `/home/kasm-user`** do container browser. O kasmweb usa UID interno que conflita com o host, causando `Permission denied` na inicialização do Chrome.
+
+---
 
 ## Operações Comuns
 
@@ -197,24 +240,21 @@ docker compose ps
 ### Ver Logs
 
 ```bash
-# Tempo real
+# Tempo real — todos os serviços
+docker compose logs -f
+
+# Só o gateway
 docker compose logs -f openclaw-gateway
 
-# Últimas linhas
-docker compose logs --tail 50
-
-# Logs do browser sidecar
-docker logs -f openclaw-browser
+# Só o caddy
+docker compose logs -f caddy
 ```
 
 ### Parar / Reiniciar
 
 ```bash
-# Parar
 docker compose down
-
-# Reiniciar
-docker compose restart
+docker compose up -d
 
 # Recriar com nova imagem
 docker compose pull
@@ -224,12 +264,12 @@ docker compose up -d --force-recreate
 ### Backup
 
 ```bash
-# Comprimir dados
-tar -czf ~/openclaw-backup-$(date +%Y%m%d).tar.gz config workspace
-
-# Restaurar
-tar -xzf ~/openclaw-backup-XXXXXXXX.tar.gz -C /DATA/AppData/openclaw/
+tar -czf ~/openclaw-backup-$(date +%Y%m%d).tar.gz \
+  /DATA/AppData/openclaw/config \
+  /DATA/AppData/openclaw/workspace
 ```
+
+---
 
 ## Integração com Canais
 
@@ -252,71 +292,94 @@ docker exec openclaw-gateway openclaw channels add --channel telegram --token "s
 docker exec openclaw-gateway openclaw channels add --channel discord --token "seu-bot-token"
 ```
 
+---
+
 ## Troubleshooting
 
-### Erro: host not found in upstream "browser"
+### `origin not allowed`
 
-```
-[emerg] host not found in upstream "browser" in /etc/nginx/conf.d/openclaw.conf
-```
-
-O nginx espera o container `browser` rodando na mesma rede interna. Verifique:
+O `openclaw.json` tem o origin errado. Corrija:
 
 ```bash
-docker ps | grep openclaw-browser
+jq '.gateway.controlUi.allowedOrigins = ["https://SEU_IP"]' \
+  /DATA/AppData/openclaw/config/openclaw.json > /tmp/new.json \
+  && mv /tmp/new.json /DATA/AppData/openclaw/config/openclaw.json
+docker restart openclaw-gateway
 ```
 
-Se não estiver rodando, garanta que o `docker-compose.yml` contém o serviço `browser` e suba novamente:
+> ⚠️ O entrypoint do container recria o `openclaw.json` a cada restart com base nas variáveis de ambiente. Use `OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS` no `.env` para persistir.
+
+### `control ui requires device identity (use HTTPS or localhost)`
+
+A Control UI só funciona em contexto HTTPS. Verifique:
+- O Caddy está rodando: `docker compose ps caddy`
+- Você aceitou o certificado no browser
+- Está acessando `https://` (não `http://`)
+
+### `gateway token missing`
+
+A UI precisa do token para conectar. Na página Visão Geral:
+1. **URL WebSocket:** `wss://SEU_IP`
+2. **Token:** valor de `OPENCLAW_GATEWAY_TOKEN` do `.env`
+3. Clique **Atualizar** → **Conectar**
+
+### `too many failed authentication attempts (retry later)`
+
+Rate limit ativado após muitas tentativas falhas. Solução:
 
 ```bash
-docker compose up -d
+docker restart openclaw-gateway
 ```
+
+Aguarde 30 segundos e tente novamente.
+
+### `pairing required`
+
+Primeiro acesso de um novo dispositivo exige aprovação:
+
+```bash
+docker exec openclaw-gateway openclaw devices list
+docker exec openclaw-gateway openclaw devices approve <requestId>
+```
+
+### `Permission denied` no browser (kasmweb)
+
+Não monte volume em `/home/kasm-user`. O kasmweb usa UID interno (1000) que pode conflitar. Remova o volume do serviço `browser` no `docker-compose.yml`.
 
 ### Container não inicia
 
 ```bash
 docker logs openclaw-gateway
+docker logs openclaw-caddy
 docker logs openclaw-browser
 ```
 
-### Não consegue acessar UI
+### Não consegue acessar a UI
 
 ```bash
-# Verificar se container está healthy
-docker ps | grep openclaw
+# Verificar se todos estão rodando
+docker compose ps
 
-# Teste direto
-curl http://10.41.10.153:8080/healthz
+# Testar Caddy diretamente
+curl -k https://10.41.10.153/healthz
 ```
 
-### Permissões de arquivo
-
-```bash
-sudo chown -R 1000:1000 /DATA/AppData/openclaw/
-```
-
-## Stack Complementar
-
-Seu OpenClaw faz parte do ecossistema CasaOS/Portainer:
-
-| Serviço | IP | Porta | Uso |
-|---------|-----|-------|-----|
-| Portainer | 10.0.110.132 | 9001 | Gerenciamento |
-| Caddy | 10.41.10.128 | 80/443 | Proxy reverso |
-| Prometheus | 10.41.10.140 | 9090 | Monitoramento |
-| **OpenClaw** | **10.41.10.153** | **8080** | **IA Pessoal** |
+---
 
 ## Segurança
 
 🔐 **Boas Práticas:**
 
-- ✅ Use SSH tunnel para acesso remoto (não exponha porta direto)
+- ✅ HTTPS nativo via Caddy com TLS interno
+- ✅ Gateway escuta apenas em loopback (`127.0.0.1:18789`)
+- ✅ Apenas o Caddy expõe IP na rede macvlan
+- ✅ Browser sidecar isolado (sem IP externo)
+- ✅ Device pairing obrigatório no primeiro acesso
 - ✅ Gere token forte: `openssl rand -hex 32`
 - ✅ Gere senha forte: `openssl rand -base64 16`
 - ✅ API keys nunca aparecem em logs
-- ✅ Browser sidecar isolado (sem IP externo)
-- ✅ Dados isolados em volumes Docker
-- ✅ Firewall ativo na VM
+
+---
 
 ## Performance
 
@@ -330,24 +393,31 @@ Seu OpenClaw faz parte do ecossistema CasaOS/Portainer:
 - RAM: 8GB+
 - Disco: 50GB+
 
+---
+
+## Stack Complementar
+
+| Serviço | IP | Porta | Uso |
+|---|---|---|---|
+| Portainer | 10.0.110.132 | 9001 | Gerenciamento |
+| Prometheus | 10.41.10.140 | 9090 | Monitoramento |
+| **OpenClaw** | **10.41.10.153** | **443 (HTTPS)** | **IA Pessoal** |
+
+---
+
 ## Licença
 
 MIT License — veja [LICENSE](LICENSE)
 
+---
+
 ## Referências
 
-- [OpenClaw GitHub](https://github.com/openclaw/openclaw)
-- [coollabsio/openclaw Docker Image](https://github.com/coollabsio/openclaw)
 - [OpenClaw Docs](https://docs.openclaw.ai)
+- [Control UI Auth](https://docs.openclaw.ai/web/dashboard)
+- [Device Pairing](https://docs.openclaw.ai/web/control-ui#device-pairing-first-connection)
+- [coollabsio/openclaw Docker Image](https://github.com/coollabsio/openclaw)
 - [Docker Compose Reference](https://docs.docker.com/compose/)
-- [Portainer Documentation](https://docs.portainer.io/)
-
-## Suporte
-
-💬 Dúvidas ou sugestões?
-
-- Abra uma [Issue](https://github.com/luanscps/openclaw-br/issues)
-- Consulte a [Discussão](https://github.com/luanscps/openclaw-br/discussions)
 
 ---
 
