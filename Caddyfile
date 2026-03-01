@@ -1,0 +1,8 @@
+# Caddy reverse proxy com TLS interno (certificado autoassinado)
+# Acesse: https://10.41.10.153
+# No primeiro acesso o browser vai pedir para aceitar o certificado.
+
+https://10.41.10.153 {
+    tls internal
+    reverse_proxy openclaw-gateway:8080
+}

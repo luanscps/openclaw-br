@@ -2,23 +2,44 @@ version: '3.8'
 
 services:
 
-  # ─── Serviço principal ───────────────────────────────────────────────────────
+  # ─── Caddy: proxy reverso com SSL automático ────────────────────────────────
+  caddy:
+    image: caddy:alpine
+    container_name: openclaw-caddy
+    restart: unless-stopped
+    volumes:
+      - /DATA/AppData/openclaw/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /DATA/AppData/openclaw/caddy-data:/data
+      - /DATA/AppData/openclaw/caddy-config:/config
+    networks:
+      macvlan-dhcp:
+        ipv4_address: 10.41.10.153   # Caddy assume o IP público
+      openclaw-internal:
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "2"
+
+  # ─── Serviço principal ──────────────────────────────────────────────────────
   openclaw-gateway:
     image: coollabsio/openclaw:latest
     container_name: openclaw-gateway
     restart: unless-stopped
     depends_on:
       - browser
+      - caddy
 
     environment:
-      HOME: /home/openclaw
+      # HOME apontando para o mesmo volume montado (evita config split)
+      HOME: /data
       NODE_ENV: production
 
-      # Modelos de IA (escolha UM)
+      # Modelo de IA
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
 
-      # Gateway config
+      # Gateway
       OPENCLAW_GATEWAY_PORT: 18789
       OPENCLAW_GATEWAY_BIND: loopback
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
@@ -28,7 +49,7 @@ services:
       AUTH_PASSWORD: ${AUTH_PASSWORD}
       PORT: 8080
 
-      # Browser sidecar (resolve erro: host not found in upstream "browser")
+      # Browser sidecar
       BROWSER_CDP_URL: http://browser:9222
 
       # Canais (opcional)
@@ -39,17 +60,9 @@ services:
       - /DATA/AppData/openclaw/config:/data/.openclaw
       - /DATA/AppData/openclaw/workspace:/data/workspace
 
+    # Sem macvlan: acesso externo feito pelo Caddy
     networks:
-      macvlan-dhcp:
-        ipv4_address: 10.41.10.153
       openclaw-internal:
-
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
 
     logging:
       driver: "json-file"
@@ -57,7 +70,7 @@ services:
         max-size: "50m"
         max-file: "3"
 
-  # ─── Browser sidecar (Chrome headless CDP — sem volume, sem IP externo) ──────
+  # ─── Browser sidecar (Chrome headless CDP) ──────────────────────────────────
   browser:
     image: kasmweb/chrome:1.16.0
     container_name: openclaw-browser
@@ -66,11 +79,8 @@ services:
 
     environment:
       VNC_PW: ${AUTH_PASSWORD:-changeme}
-      CHROME_ARGS: --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0
 
-    # Sem volume: o browser é usado apenas como CDP headless.
-    # Montar /home/kasm-user causava 'Permission denied' (UID interno do kasmweb difere do host).
-
+    # Sem volume: evita Permission denied (UID interno do kasmweb != host)
     networks:
       openclaw-internal:
 
@@ -83,6 +93,6 @@ services:
 # ─── Redes ────────────────────────────────────────────────────────────────────
 networks:
   macvlan-dhcp:
-    external: true          # Sua rede macvlan existente
+    external: true          # Rede macvlan existente (só o Caddy expõe IP)
   openclaw-internal:
-    driver: bridge          # Rede interna: openclaw-gateway <-> browser
+    driver: bridge          # Comunicação interna entre containers
