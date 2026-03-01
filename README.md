@@ -10,6 +10,8 @@
 
 Este repositório contém a instalação otimizada do [OpenClaw](https://github.com/openclaw/openclaw) para ambientes CasaOS com Docker, Portainer e rede **macvlan-dhcp** já configurada.
 
+> **Imagem utilizada:** [`coollabsio/openclaw:latest`](https://github.com/coollabsio/openclaw) — imagem pré-compilada, atualizada automaticamente a cada 6h, com nginx + browser sidecar incluídos.
+
 🎯 **Objetivo:** Deploy pronto em ~20 minutos utilizando exatamente sua infraestrutura existente
 
 ## Infraestrutura Necessária
@@ -38,28 +40,50 @@ Este repositório contém a instalação otimizada do [OpenClaw](https://github.
 
 | Componente | Especificação |
 |-----------|---------------|
-| **Container** | openclaw-gateway |
-| **Imagem** | openclaw:latest |
-| **IP Alocado** | 10.41.10.151/24 |
-| **Porta** | 18789 |
+| **Container principal** | openclaw-gateway |
+| **Imagem** | coollabsio/openclaw:latest |
+| **IP Alocado** | 10.41.10.153/24 |
+| **Porta UI (nginx)** | 8080 |
+| **Porta Gateway (interno)** | 18789 |
+| **Container browser** | openclaw-browser |
+| **Imagem browser** | kasmweb/chrome:1.16.0 |
 | **Diretório** | /DATA/AppData/openclaw/ |
-| **Rede** | macvlan-dhcp (external) |
+| **Rede externa** | macvlan-dhcp |
+| **Rede interna** | openclaw-internal (bridge) |
 | **Restart** | unless-stopped |
+
+### Diagrama de Rede
+
+```
+Sua rede local (macvlan-dhcp)
+         │
+         ▼  http://10.41.10.153:8080
+┌──────────────────────────────────────────┐
+│  openclaw-gateway (coollabsio/openclaw)  │
+│  nginx :8080  ──▶  gateway :18789        │
+│  Login: admin / AUTH_PASSWORD            │
+└────────────┬─────────────────────────────┘
+             │ openclaw-internal (bridge)
+             ▼  http://browser:9222 (CDP)
+    ┌────────────────────┐
+    │  openclaw-browser  │
+    │  kasmweb/chrome    │
+    │  Chrome CDP :9222  │
+    └────────────────────┘
+      (sem IP externo —
+       isolado na rede
+       interna)
+```
 
 ## Estrutura de Arquivos
 
 ```
 openclaw-br/
-├── docker-compose.yml          # Stack pronto para Portainer
+├── docker-compose.yml          # Stack com gateway + browser sidecar
 ├── .env.example                # Template de variáveis de ambiente
 ├── setup-verificacao.sh        # Script automático de validação
 ├── README.md                   # Este arquivo
-├── LICENSE                     # MIT License
-└── docs/
-    ├── INSTALACAO_PASSO_A_PASSO.md
-    ├── CONFIGURACAO_CANAIS.md
-    ├── TROUBLESHOOTING.md
-    └── BACKUP_RESTAURACAO.md
+└── LICENSE                     # MIT License
 ```
 
 ## Quickstart (20 minutos)
@@ -76,7 +100,7 @@ cd openclaw
 
 ```bash
 # Criar diretórios de dados
-mkdir -p config workspace credentials cache
+mkdir -p config workspace browser-profile
 
 # Definir permissões
 sudo chown -R 1000:1000 .
@@ -89,7 +113,7 @@ chmod +x setup-verificacao.sh
 ./setup-verificacao.sh
 ```
 
-**Esperado:** Todos os checkes em ✅
+**Esperado:** Todos os checks em ✅
 
 ### 4️⃣ Configurar Credenciais
 
@@ -103,7 +127,8 @@ nano .env
 
 Substituir:
 - `sk-ant-XXXXXXXXXXXXXXXXXXXXX` → Sua chave [Anthropic Console](https://console.anthropic.com/)
-- `seu_token_super_seguro_aqui_32_chars` → (gerado automaticamente)
+- `seu_token_super_seguro_aqui_32_chars` → Gere com `openssl rand -hex 32`
+- `sua_senha_forte_aqui` → Senha para login na UI (gere com `openssl rand -base64 16`)
 
 ### 5️⃣ Deploy
 
@@ -113,27 +138,30 @@ Substituir:
 2. **Stacks** → **Add stack**
 3. Nome: `openclaw`
 4. Cole o conteúdo de `docker-compose.yml`
-5. **Deploy**
+5. Na seção **Environment variables**, adicione as variáveis do `.env`
+6. Clique em **Deploy the stack**
 
 **Opção B: Via Docker Compose**
 
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
 ### 6️⃣ Acessar a UI
 
-**Do seu laptop:**
+Acesse diretamente na sua rede local:
 
-```bash
-# Terminal 1: SSH Tunnel
-ssh -N -L 18789:10.41.10.151:18789 seu-usuario@seu-servidor.local
-
-# Terminal 2: Navegador
-open http://127.0.0.1:18789
+```
+http://10.41.10.153:8080
 ```
 
-Cole o token do `.env` para autenticar.
+Login: `admin` / senha definida em `AUTH_PASSWORD` do `.env`
+
+> **Acesso remoto (fora da rede local):** Use SSH tunnel:
+> ```bash
+> ssh -N -L 8080:10.41.10.153:8080 seu-usuario@seu-servidor.local
+> # Acesse: http://127.0.0.1:8080
+> ```
 
 ## Configuração Detalhada
 
@@ -144,16 +172,16 @@ Cole o token do `.env` para autenticar.
 | `ANTHROPIC_API_KEY` | Chave do Claude (Anthropic) | Sim (ou OpenAI) |
 | `OPENAI_API_KEY` | Chave do GPT-4o (OpenAI) | Alternativa |
 | `OPENCLAW_GATEWAY_TOKEN` | Token seguro do gateway | Sim |
+| `AUTH_PASSWORD` | Senha da interface web (nginx) | **Sim** |
 | `TELEGRAM_BOT_TOKEN` | Token do bot Telegram | Não |
 | `DISCORD_BOT_TOKEN` | Token do bot Discord | Não |
 
 ### Volumes Mapeados
 
 ```yaml
-/DATA/AppData/openclaw/config       → ~/.openclaw
-/DATA/AppData/openclaw/workspace    → ~/.openclaw/workspace
-/DATA/AppData/openclaw/credentials  → ~/.openclaw/credentials
-/DATA/AppData/openclaw/cache        → ~/.openclaw/cache
+/DATA/AppData/openclaw/config          → /data/.openclaw
+/DATA/AppData/openclaw/workspace       → /data/workspace
+/DATA/AppData/openclaw/browser-profile → /home/kasm-user  (browser)
 ```
 
 Todos os dados são **persistentes** entre restarts.
@@ -174,6 +202,9 @@ docker compose logs -f openclaw-gateway
 
 # Últimas linhas
 docker compose logs --tail 50
+
+# Logs do browser sidecar
+docker logs -f openclaw-browser
 ```
 
 ### Parar / Reiniciar
@@ -194,10 +225,10 @@ docker compose up -d --force-recreate
 
 ```bash
 # Comprimir dados
-tar -czf ~/openclaw-backup-$(date +%Y%m%d).tar.gz .
+tar -czf ~/openclaw-backup-$(date +%Y%m%d).tar.gz config workspace
 
 # Restaurar
-tar -xzf ~/openclaw-backup-20260201.tar.gz -C /DATA/AppData/openclaw/
+tar -xzf ~/openclaw-backup-XXXXXXXX.tar.gz -C /DATA/AppData/openclaw/
 ```
 
 ## Integração com Canais
@@ -223,22 +254,39 @@ docker exec openclaw-gateway openclaw channels add --channel discord --token "se
 
 ## Troubleshooting
 
+### Erro: host not found in upstream "browser"
+
+```
+[emerg] host not found in upstream "browser" in /etc/nginx/conf.d/openclaw.conf
+```
+
+O nginx espera o container `browser` rodando na mesma rede interna. Verifique:
+
+```bash
+docker ps | grep openclaw-browser
+```
+
+Se não estiver rodando, garanta que o `docker-compose.yml` contém o serviço `browser` e suba novamente:
+
+```bash
+docker compose up -d
+```
+
 ### Container não inicia
 
 ```bash
 docker logs openclaw-gateway
+docker logs openclaw-browser
 ```
-
-Procure por erros de API key ou configuração.
 
 ### Não consegue acessar UI
 
 ```bash
-# Verifique SSH tunnel
-ps aux | grep "18789:10.41.10.151"
+# Verificar se container está healthy
+docker ps | grep openclaw
 
-# Teste conectividade
-curl http://10.41.10.151:18789/health
+# Teste direto
+curl http://10.41.10.153:8080/healthz
 ```
 
 ### Permissões de arquivo
@@ -247,25 +295,16 @@ curl http://10.41.10.151:18789/health
 sudo chown -R 1000:1000 /DATA/AppData/openclaw/
 ```
 
-Ver [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) para mais soluções.
-
-## Documentação Adicional
-
-- 📖 [Instalação Passo a Passo](docs/INSTALACAO_PASSO_A_PASSO.md)
-- 🔧 [Configuração de Canais](docs/CONFIGURACAO_CANAIS.md)
-- 🐛 [Troubleshooting](docs/TROUBLESHOOTING.md)
-- 💾 [Backup e Restauração](docs/BACKUP_RESTAURACAO.md)
-
 ## Stack Complementar
 
-Seu OpenClaw agora faz parte do ecossistema CasaOS/Portainer:
+Seu OpenClaw faz parte do ecossistema CasaOS/Portainer:
 
 | Serviço | IP | Porta | Uso |
 |---------|-----|-------|-----|
 | Portainer | 10.0.110.132 | 9001 | Gerenciamento |
 | Caddy | 10.41.10.128 | 80/443 | Proxy reverso |
 | Prometheus | 10.41.10.140 | 9090 | Monitoramento |
-| OpenClaw | 10.41.10.151 | 18789 | IA Pessoal |
+| **OpenClaw** | **10.41.10.153** | **8080** | **IA Pessoal** |
 
 ## Segurança
 
@@ -273,16 +312,17 @@ Seu OpenClaw agora faz parte do ecossistema CasaOS/Portainer:
 
 - ✅ Use SSH tunnel para acesso remoto (não exponha porta direto)
 - ✅ Gere token forte: `openssl rand -hex 32`
+- ✅ Gere senha forte: `openssl rand -base64 16`
 - ✅ API keys nunca aparecem em logs
+- ✅ Browser sidecar isolado (sem IP externo)
 - ✅ Dados isolados em volumes Docker
 - ✅ Firewall ativo na VM
-- ✅ Backups regulares em `/DATA/Backups/`
 
 ## Performance
 
 **Requisitos Mínimos:**
 - CPU: 2 cores
-- RAM: 4GB
+- RAM: 4GB (gateway) + 2GB (browser) = 6GB total
 - Disco: 20GB
 
 **Recomendado:**
@@ -294,13 +334,10 @@ Seu OpenClaw agora faz parte do ecossistema CasaOS/Portainer:
 
 MIT License — veja [LICENSE](LICENSE)
 
-## Contribuições
-
-Contribuições são bem-vindas! Abra uma issue ou pull request.
-
 ## Referências
 
 - [OpenClaw GitHub](https://github.com/openclaw/openclaw)
+- [coollabsio/openclaw Docker Image](https://github.com/coollabsio/openclaw)
 - [OpenClaw Docs](https://docs.openclaw.ai)
 - [Docker Compose Reference](https://docs.docker.com/compose/)
 - [Portainer Documentation](https://docs.portainer.io/)
@@ -311,10 +348,9 @@ Contribuições são bem-vindas! Abra uma issue ou pull request.
 
 - Abra uma [Issue](https://github.com/luanscps/openclaw-br/issues)
 - Consulte a [Discussão](https://github.com/luanscps/openclaw-br/discussions)
-- Veja [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
 
 ---
 
 **Criado por:** [luanscps](https://github.com/luanscps)  
-**Última atualização:** Fevereiro 2026  
+**Última atualização:** Março 2026  
 **Status:** ✅ Pronto para produção

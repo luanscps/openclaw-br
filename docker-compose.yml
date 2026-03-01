@@ -1,57 +1,88 @@
 version: '3.8'
 
 services:
+
+  # ─── Serviço principal ───────────────────────────────────────────
   openclaw-gateway:
-    image: openclaw:latest
+    image: coollabsio/openclaw:latest
     container_name: openclaw-gateway
     restart: unless-stopped
-    
-    # Variáveis de ambiente
+    depends_on:
+      - browser
+
     environment:
       HOME: /home/openclaw
       NODE_ENV: production
-      
-      # Modelos de IA (escolha um)
+
+      # Modelos de IA (escolha UM)
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      
+
       # Gateway config
       OPENCLAW_GATEWAY_PORT: 18789
-      OPENCLAW_GATEWAY_BIND: lan
+      OPENCLAW_GATEWAY_BIND: loopback
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
-      
+
+      # Auth da UI (nginx embutido)
+      AUTH_USERNAME: admin
+      AUTH_PASSWORD: ${AUTH_PASSWORD}
+      PORT: 8080
+
+      # Browser sidecar (resolve erro: host not found in upstream "browser")
+      BROWSER_CDP_URL: http://browser:9222
+
       # Canais (opcional)
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN:-}
-    
-    # Volumes (dados persistem em /DATA/AppData/)
+
     volumes:
-      - /DATA/AppData/openclaw/config:/home/openclaw/.openclaw
-      - /DATA/AppData/openclaw/workspace:/home/openclaw/.openclaw/workspace
-      - /DATA/AppData/openclaw/credentials:/home/openclaw/.openclaw/credentials
-      - /DATA/AppData/openclaw/cache:/home/openclaw/.openclaw/cache
-    
-    # Rede: sua macvlan-dhcp já existente
+      - /DATA/AppData/openclaw/config:/data/.openclaw
+      - /DATA/AppData/openclaw/workspace:/data/workspace
+
     networks:
       macvlan-dhcp:
-        ipv4_address: 10.41.10.151
-    
-    # Health check
+        ipv4_address: 10.41.10.153
+      openclaw-internal:
+
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:18789/health || exit 1"]
+      test: ["CMD", "curl", "-f", "http://localhost:8080/healthz"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 60s
-    
-    # Logs
+
     logging:
       driver: "json-file"
       options:
         max-size: "50m"
         max-file: "3"
 
-# Rede externa (macvlan já criada em seu Portainer)
+  # ─── Browser sidecar (Chrome headless CDP) ───────────────────────
+  browser:
+    image: kasmweb/chrome:1.16.0
+    container_name: openclaw-browser
+    restart: unless-stopped
+    shm_size: '2gb'
+
+    environment:
+      VNC_PW: ${AUTH_PASSWORD:-changeme}
+      CHROME_ARGS: --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0
+
+    volumes:
+      - /DATA/AppData/openclaw/browser-profile:/home/kasm-user
+
+    networks:
+      openclaw-internal:
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "2"
+
+# ─── Redes ──────────────────────────────────────────────────────────
 networks:
   macvlan-dhcp:
-    external: true
+    external: true          # Sua rede macvlan existente
+  openclaw-internal:
+    driver: bridge          # Rede interna: openclaw-gateway <-> browser
