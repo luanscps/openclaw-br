@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
 
-  # ─── Serviço principal ───────────────────────────────────────────
+  # ─── Serviço principal ───────────────────────────────────────────────────────
   openclaw-gateway:
     image: coollabsio/openclaw:latest
     container_name: openclaw-gateway
@@ -57,7 +57,7 @@ services:
         max-size: "50m"
         max-file: "3"
 
-  # ─── Browser sidecar (Chrome headless CDP) ───────────────────────
+  # ─── Browser sidecar (Chrome headless CDP — sem volume, sem IP externo) ──────
   browser:
     image: kasmweb/chrome:1.16.0
     container_name: openclaw-browser
@@ -68,8 +68,8 @@ services:
       VNC_PW: ${AUTH_PASSWORD:-changeme}
       CHROME_ARGS: --remote-debugging-port=9222 --remote-debugging-address=0.0.0.0
 
-    volumes:
-      - /DATA/AppData/openclaw/browser-profile:/home/kasm-user
+    # Sem volume: o browser é usado apenas como CDP headless.
+    # Montar /home/kasm-user causava 'Permission denied' (UID interno do kasmweb difere do host).
 
     networks:
       openclaw-internal:
@@ -80,7 +80,7 @@ services:
         max-size: "20m"
         max-file: "2"
 
-# ─── Redes ──────────────────────────────────────────────────────────
+# ─── Redes ────────────────────────────────────────────────────────────────────
 networks:
   macvlan-dhcp:
     external: true          # Sua rede macvlan existente
