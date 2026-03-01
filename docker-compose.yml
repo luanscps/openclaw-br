@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
 
-  # ─── Caddy: proxy reverso com SSL automático ────────────────────────────────
+  # ─── Caddy: proxy reverso com SSL ─────────────────────────────────────────
   caddy:
     image: caddy:alpine
     container_name: openclaw-caddy
@@ -13,7 +13,7 @@ services:
       - /DATA/AppData/openclaw/caddy-config:/config
     networks:
       macvlan-dhcp:
-        ipv4_address: 10.41.10.153   # Caddy assume o IP público
+        ipv4_address: ${SERVER_IP:-10.41.10.153}
       openclaw-internal:
     logging:
       driver: "json-file"
@@ -31,7 +31,7 @@ services:
       - caddy
 
     environment:
-      # HOME apontando para o mesmo volume montado (evita config split)
+      # HOME apontando para o volume montado (evita config split)
       HOME: /data
       NODE_ENV: production
 
@@ -44,13 +44,17 @@ services:
       OPENCLAW_GATEWAY_BIND: loopback
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
 
-      # Auth da UI (nginx embutido)
+      # Auth da UI
       AUTH_USERNAME: admin
       AUTH_PASSWORD: ${AUTH_PASSWORD}
       PORT: 8080
 
       # Browser sidecar
       BROWSER_CDP_URL: http://browser:9222
+
+      # Segurança: origins e proxies confiáveis (do .env)
+      OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS: ${OPENCLAW_CONTROL_UI_ALLOWED_ORIGINS:-https://10.41.10.153}
+      OPENCLAW_GATEWAY_TRUSTED_PROXIES: ${OPENCLAW_GATEWAY_TRUSTED_PROXIES:-127.0.0.1}
 
       # Canais (opcional)
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
@@ -60,7 +64,7 @@ services:
       - /DATA/AppData/openclaw/config:/data/.openclaw
       - /DATA/AppData/openclaw/workspace:/data/workspace
 
-    # Sem macvlan: acesso externo feito pelo Caddy
+    # Sem macvlan: acesso externo via Caddy
     networks:
       openclaw-internal:
 
@@ -70,7 +74,7 @@ services:
         max-size: "50m"
         max-file: "3"
 
-  # ─── Browser sidecar (Chrome headless CDP) ──────────────────────────────────
+  # ─── Browser sidecar (Chrome headless CDP) ─────────────────────────────────
   browser:
     image: kasmweb/chrome:1.16.0
     container_name: openclaw-browser
@@ -93,6 +97,6 @@ services:
 # ─── Redes ────────────────────────────────────────────────────────────────────
 networks:
   macvlan-dhcp:
-    external: true          # Rede macvlan existente (só o Caddy expõe IP)
+    external: true
   openclaw-internal:
-    driver: bridge          # Comunicação interna entre containers
+    driver: bridge
